@@ -31,11 +31,13 @@ interface ErrorSignature {
     name: string;
     parameters: string;
     origin: string; // Name of the origin file
+    imported: boolean;
 }
 interface EventSignature {
     name: string;
     parameters: string;
     origin: string; // Name of the origin file
+    imported: boolean;
 }
 interface FunctionSignature {
     name: string;
@@ -47,36 +49,29 @@ interface FunctionSignature {
 }
 
 const facadeConfigPath = './facade.yaml'; // Configuration file path
-const outputDir = './generated'; // Output directory for generated files
+const facadeDir = './generated'; // Output directory for generated files
 
 async function main() {
     const projectRoot = path.resolve(__dirname, '../../');
     process.chdir(projectRoot);
 
     // Ensure output directory exists
-    await fs.ensureDir(path.resolve(outputDir));
+    await fs.ensureDir(path.resolve(facadeDir));
+    const facadeFiles = await getSolidityFiles(facadeDir);
 
     // Load facade configuration
     const facadeConfigs: FacadeConfig[] = await loadFacadeConfig();
 
     for (const facadeConfig of facadeConfigs) {
-        // Ensure required fields are present
-        if (!facadeConfig.bundleName || !facadeConfig.bundleDirName) {
-            console.error('Error: bundleName and bundleDirName are required in facade.yaml');
-            process.exit(1);
-        }
+        validateFacadeConfig(facadeConfig);
 
-        if (!facadeConfig.facades || facadeConfig.facades.length === 0) {
-            console.error('Error: At least one facade must be defined in facade.yaml');
-            process.exit(1);
-        }
+        const functionDir = `./src/${facadeConfig.bundleDirName}/functions`; // Adjust the path as needed
+        const interfaceDir = `./src/${facadeConfig.bundleDirName}/interfaces`; // Adjust the path as needed
+        // Recursively read all Solidity files in the source directory
+        const functionFiles = await getSolidityFiles(functionDir);
+        const interfaceFiles = await getSolidityFiles(interfaceDir);
 
-        for (const facade of facadeConfig.facades) {
-            if (!facade.name) {
-                console.error('Error: Each facade must have a name');
-                process.exit(1);
-            }
-        }
+        const regex = /^(I)?.*(Errors|Events)\.sol$/;
 
         // Process each facade
         for (const facade of facadeConfig.facades) {
@@ -86,19 +81,24 @@ async function main() {
                 events: [],
                 functions: []
             };
-            const functionDir = `./src/${facadeConfig.bundleDirName}/functions`; // Adjust the path as needed
-            const interfaceDir = `./src/${facadeConfig.bundleDirName}/interfaces`; // Adjust the path as needed
-            // Recursively read all Solidity files in the source directory
-            const functionFiles = await getSolidityFiles(functionDir);
-            const interfaceFiles = await getSolidityFiles(interfaceDir);
-
-            const regex = /^(I)?.*(Errors|Events)\.sol$/;
 
             for (const file of interfaceFiles) {
                 const fileName = path.basename(file);
 
-                if (regex.test(fileName)) {
-                    facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
+                if (!regex.test(fileName)) {
+                    continue;
+                }
+
+                facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
+
+                const content = await fs.readFile(file, 'utf8');
+                try {
+                    const ast = parse(content, { tolerant: true });
+
+                    // Extract functions from the AST
+                    traverseASTs(ast, facadeObject, fileName, facade, true);
+                } catch (err) {
+                    console.error(`Error parsing ${file}:`, err);
                 }
             }
 
@@ -122,7 +122,42 @@ async function main() {
             }
 
             // Generate facade contract
-            await generateFacadeContract(facadeObject, facade, facadeConfig);
+            const generatedCode = await generateFacadeContract(facadeObject, facade, facadeConfig);
+
+            const latestFacade = getLatestVersionFile(facadeFiles, facade.name);
+            if (latestFacade === null) {
+                writeFacadeContract(facade.name, [1, 0, 0], generatedCode);
+                process.exit(1);
+            }
+
+            const latestObject: FacadeObjects = {
+                files: [],
+                errors: [],
+                events: [],
+                functions: []
+            };
+            try {
+                const generatedAst = parse(generatedCode, { tolerant: true });
+
+                // Extract functions from the AST
+                traverseASTs(generatedAst, latestObject, latestFacade.file, facade);
+            } catch (err) {
+                console.error(`Error parsing ${latestFacade.file}:`, err);
+                process.exit(1);
+            }
+            const majorDiff = getSymmetricDifference(facadeObject.functions, latestObject.functions, ["name", "parameters"]);
+            if (majorDiff.length > 0) {
+                latestFacade.version[0]++;
+            }
+            let minorDiff = getSymmetricDifference(facadeObject.errors, latestObject.errors, ["name", "parameters"]);
+            if (minorDiff.length > 0) {
+                latestFacade.version[1]++;
+            }
+            minorDiff = getSymmetricDifference(facadeObject.events, latestObject.events, ["name", "parameters"]);
+            if (minorDiff.length > 0) {
+                latestFacade.version[1]++;
+            }
+            writeFacadeContract(facade.name, latestFacade.version, generatedCode);
         }
     }
 }
@@ -155,6 +190,26 @@ async function loadFacadeConfig(): Promise<FacadeConfig[]> {
     }
 }
 
+function validateFacadeConfig(facadeConfig: FacadeConfig) {
+    // Ensure required fields are present
+    if (!facadeConfig.bundleName || !facadeConfig.bundleDirName) {
+        console.error('Error: bundleName and bundleDirName are required in facade.yaml');
+        process.exit(1);
+    }
+
+    if (!facadeConfig.facades || facadeConfig.facades.length === 0) {
+        console.error('Error: At least one facade must be defined in facade.yaml');
+        process.exit(1);
+    }
+
+    for (const facade of facadeConfig.facades) {
+        if (!facade.name) {
+            console.error('Error: Each facade must have a name');
+            process.exit(1);
+        }
+    }
+}
+
 async function getSolidityFiles(dir: string): Promise<string[]> {
     let files: string[] = [];
     const items = await fs.readdir(dir);
@@ -174,42 +229,92 @@ async function getSolidityFiles(dir: string): Promise<string[]> {
     return files;
 }
 
+function getLatestVersionFile(files: string[], baseName: string): { file: string; version: number[] } | null {
+    const regex = new RegExp(`^${baseName}(?:V(\\d+)_(\\d+)_(\\d+))?\\.sol$`);
+
+    return files
+        .map(file => {
+            const match = file.match(regex);
+            if (match) {
+                const [_, major, minor, patch] = match.map(Number);
+                return {
+                    file,
+                    version: [major || 1, minor || 0, patch || 0],
+                };
+            }
+            return null;
+        })
+        .filter((item): item is { file: string; version: number[] } => item !== null)
+        .sort((a, b) => {
+            // バージョン配列を比較 (降順)
+            for (let i = 0; i < 3; i++) {
+                if (b.version[i] !== a.version[i]) {
+                    return b.version[i] - a.version[i];
+                }
+            }
+            return 0;
+        })[0] || null;
+}
+
+function getSymmetricDifference<T>(
+    array1: T[],
+    array2: T[],
+    keys: (keyof T)[]
+): T[] {
+    const isMatch = (a: T, b: T) => keys.every(key => a[key] === b[key]);
+
+    // A ∪ B
+    const union = [...array1, ...array2];
+    // A ∩ B
+    const intersection = array1.filter(item1 =>
+        array2.some(item2 => isMatch(item1, item2))
+    );
+
+    // A ∪ B - A ∩ B
+    return union.filter(item =>
+        !intersection.some(intersectItem => isMatch(item, intersectItem))
+    );
+}
+
 function traverseASTs(
     ast: any,
     facadeObjects: FacadeObjects,
     origin: string,
-    facade: FacadeDefinition
+    facade: FacadeDefinition,
+    imported: boolean = false
 ) {
     if (ast.type === 'FunctionDefinition' && ast.isConstructor === false) {
         extractFunctions(ast, facadeObjects.functions, origin, facade);
     } else if (ast.type === 'ContractDefinition') {
         // Traverse contract sub-nodes
         for (const subNode of ast.subNodes) {
-            traverseASTs(subNode, facadeObjects, origin, facade);
+            traverseASTs(subNode, facadeObjects, origin, facade, imported);
         }
     } else if (ast.type === 'SourceUnit') {
         // Traverse source unit nodes
         for (const child of ast.children) {
-            traverseASTs(child, facadeObjects, origin, facade);
+            traverseASTs(child, facadeObjects, origin, facade, imported);
         }
     } else if (ast.type === 'CustomErrorDefinition') {
-        extractErrors(ast, facadeObjects.errors, origin);
+        extractErrors(ast, facadeObjects.errors, origin, imported);
     } else if (ast.type === 'EventDefinition') {
-        extractEvents(ast, facadeObjects.events, origin);
+        extractEvents(ast, facadeObjects.events, origin, imported);
     }
 }
 
 function extractErrors(
     ast: any,
     errors: ErrorSignature[],
-    origin: string
+    origin: string,
+    imported: boolean
 ) {
     const error: ErrorSignature = {
         name: ast.name,
         parameters: ast.parameters
             .map((param: any) => getParameter(param))
             .join(', '),
-        origin: origin
+        origin: origin,
+        imported: imported
     };
     errors.push(error);
 }
@@ -217,14 +322,16 @@ function extractErrors(
 function extractEvents(
     ast: any,
     events: EventSignature[],
-    origin: string
+    origin: string,
+    imported: boolean
 ) {
     const event: EventSignature = {
         name: ast.name,
         parameters: ast.parameters
             .map((param: any) => getParameter(param))
             .join(', '),
-        origin: origin
+        origin: origin,
+        imported: imported
     };
     events.push(event);
 }
@@ -296,8 +403,8 @@ async function generateFacadeContract(
     objects: FacadeObjects,
     facade: FacadeDefinition,
     config: FacadeConfig
-) {
-    const facadeFilePath = path.join(outputDir, `${facade.name}.sol`);
+): Promise<string> {
+    const facadeFilePath = path.join(facadeDir, `${facade.name}.sol`);
     let code = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -311,10 +418,16 @@ import {Schema} from "src/${config.bundleDirName}/storage/Schema.sol";
     code += `\ncontract ${facade.name} is Schema, ${objects.files.map((file) => file.name).join(', ')} {\n`;
 
     for (const error of objects.errors) {
+        if (error.imported) {
+            continue;
+        }
         code += generateError(error);
     }
     code += `\n`;
     for (const event of objects.events) {
+        if (event.imported) {
+            continue;
+        }
         code += generateEvent(event);
     }
     code += `\n`;
@@ -324,11 +437,19 @@ import {Schema} from "src/${config.bundleDirName}/storage/Schema.sol";
 
     code += `}\n`;
 
+    return code;
+
     // Write the facade contract to the output file
     await fs.writeFile(facadeFilePath, code);
     console.log(`Facade contract generated at ${facadeFilePath}`);
 }
 
+async function writeFacadeContract(facadeName: string, version: number[], code: string) {
+    // Write the facade contract to the output file
+    const facadeFilePath = path.join(facadeDir, `${facadeName}V${version[0]}_${version[1]}_${version[2]}.sol`);
+    await fs.writeFile(facadeFilePath, code);
+    console.log(`Facade contract generated at ${facadeFilePath}`);
+}
 function generateError(error: ErrorSignature) {
     return `    error ${error.name}(${error.parameters});\n`
 }
