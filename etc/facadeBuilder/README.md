@@ -30,6 +30,59 @@ This YAML specification is specifically designed for Solidity smart contract bun
 | `excludeFileNames` | List of Strings | Solidity contract files to exclude | × |
 | `excludeFunctionNames` | List of Strings | Function names to exclude from the facade | × |
 
+## Project Structure
+
+### Required Directory Layout
+```
+project/
+├── src/
+│   └── {bundleDirName}/
+│       ├── functions/      # Contains contract function implementations
+│       ├── interfaces/     # Contains error and event interface definitions
+│       └── storage/
+│           └── Schema.sol  # Base schema contract
+└── generated/             # Output directory for generated facades
+```
+
+### Interface File Naming Conventions
+- Error interface files must match pattern: `(I)?.*Errors.sol`
+- Event interface files must match pattern: `(I)?.*Events.sol`
+
+## Generated Facade Contract Specifications
+
+### Contract Structure
+1. SPDX License Identifier: MIT
+2. Solidity version: ^0.8.24
+3. Imports:
+   - Schema.sol from bundleDirName
+   - All error and event interfaces
+4. Contract inheritance: Extends Schema and all imported interfaces
+
+### Function Generation Rules
+- Skip functions that are:
+  - Unnamed (constructor, fallback, receive)
+  - Start with "test"
+  - Named "setUp"
+  - Marked as private or internal
+  - Listed in excludeFunctionNames
+- Default visibility is "public" if not specified
+
+## Versioning System
+
+### Version Format
+- Format: `{facadeName}V{major}_{minor}_{patch}.sol`
+- Example: `TextDAOFacadeV1_0_0.sol`
+
+### Version Increment Rules
+1. Major Version (X.0.0):
+   - Incremented when function signatures change (name or parameters)
+   - Resets minor and patch versions to 0
+2. Minor Version (0.X.0):
+   - Incremented when errors or events change
+   - Resets patch version to 0
+3. Patch Version (0.0.X):
+   - Reserved for future use
+
 ## Examples
 
 ### Solidity Contract Bundle Configuration
