@@ -48,88 +48,78 @@ interface FunctionSignature {
     origin: string; // Name of the origin file
 }
 
-const facadeConfigPath = './facade.yaml'; // Configuration file path
-const facadeDir = './generated'; // Output directory for generated files
+// 新しいクラスを作成
+class FacadeBuilder {
+    private facadeConfigPath: string;
+    private facadeDir: string;
+    private projectRoot: string;
 
-async function main() {
-    const projectRoot = path.resolve(__dirname, '../../');
-    process.chdir(projectRoot);
+    constructor(facadeConfigPath: string, facadeDir: string, projectRoot: string) {
+        this.facadeConfigPath = facadeConfigPath;
+        this.facadeDir = facadeDir;
+        this.projectRoot = projectRoot;
+    }
 
-    // Ensure output directory exists
-    await fs.ensureDir(path.resolve(facadeDir));
-    const facadeFiles = await getSolidityFiles(facadeDir);
+    async build() {
+        process.chdir(this.projectRoot);
+        await fs.ensureDir(path.resolve(this.facadeDir));
 
-    // Load facade configuration
-    const facadeConfigs: FacadeConfig[] = await loadFacadeConfig();
+        const facadeConfigs = await this.loadConfigurations();
+        const facadeFiles = await getSolidityFiles(this.facadeDir);
 
-    for (const facadeConfig of facadeConfigs) {
-        validateFacadeConfig(facadeConfig);
+        for (const config of facadeConfigs) {
+            await this.processBuilderConfig(config, facadeFiles);
+        }
+    }
 
-        const functionDir = `./src/${facadeConfig.bundleDirName}/functions`; // Adjust the path as needed
-        const interfaceDir = `./src/${facadeConfig.bundleDirName}/interfaces`; // Adjust the path as needed
-        // Recursively read all Solidity files in the source directory
-        const functionFiles = await getSolidityFiles(functionDir);
-        const interfaceFiles = await getSolidityFiles(interfaceDir);
+    private async loadConfigurations(): Promise<FacadeConfig[]> {
+        try {
+            const configContent = await fs.readFile(this.facadeConfigPath, 'utf8');
+            const configRaws = yaml.load(configContent) as any;
 
-        const regex = /^(I)?.*(Errors|Events)\.sol$/;
-
-        // Process each facade
-        for (const facade of facadeConfig.facades) {
-            const facadeObject: FacadeObjects = {
-                files: [],
-                errors: [],
-                events: [],
-                functions: []
-            };
-
-            for (const file of interfaceFiles) {
-                const fileName = path.basename(file);
-
-                if (!regex.test(fileName)) {
-                    continue;
+            for (let configRaw of configRaws) {
+                if (!configRaw.bundleDirName) {
+                    configRaw.bundleDirName = configRaw.bundleName
                 }
-
-                facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
-
-                const content = await fs.readFile(file, 'utf8');
-                try {
-                    const ast = parse(content, { tolerant: true });
-
-                    // Extract functions from the AST
-                    traverseASTs(ast, facadeObject, fileName, facade, true);
-                } catch (err) {
-                    console.error(`Error parsing ${file}:`, err);
+                // Ensure excludeFileNames and excludeFunctionNames are arrays
+                for (const facade of configRaw.facades) {
+                    if (!facade.excludeFileNames) {
+                        facade.excludeFileNames = [];
+                    }
+                    if (!facade.excludeFunctionNames) {
+                        facade.excludeFunctionNames = [];
+                    }
                 }
             }
 
-            for (const file of functionFiles) {
-                const fileName = path.basename(file);
+            const config = configRaws as FacadeConfig[];
+            return config;
+        } catch (err) {
+            console.error(`Could not load facade configuration from ${this.facadeConfigPath}.`);
+            process.exit(1);
+        }
+    }
 
-                // Exclude files based on facade configuration
-                if (facade.excludeFileNames.includes(fileName)) {
-                    continue;
-                }
+    private async processBuilderConfig(
+        config: FacadeConfig,
+        existingFacadeFiles: string[]
+    ) {
+        validateFacadeConfig(config);
 
-                const content = await fs.readFile(file, 'utf8');
-                try {
-                    const ast = parse(content, { tolerant: true });
+        const sourceFiles = await this.collectSourceFiles(config.bundleDirName);
 
-                    // Extract functions from the AST
-                    traverseASTs(ast, facadeObject, fileName, facade);
-                } catch (err) {
-                    console.error(`Error parsing ${file}:`, err);
-                }
-            }
-
-            // Generate facade contract
-            const generatedCode = await generateFacadeContract(facadeObject, facade, facadeConfig);
-
-            const latestFacade = getLatestVersionFile(facadeFiles, facade.name);
+        for (const facade of config.facades) {
+            const facadeObject = await this.extractFacadeObjects(sourceFiles, facade);
+            const generatedCode = await this.generateFacadeContract(
+                facadeObject,
+                facade,
+                config,
+            );
+            const latestFacade = getLatestVersionFile(existingFacadeFiles, facade.name);
             if (latestFacade === null) {
-                writeFacadeContract(facade.name, [1, 0, 0], generatedCode);
+                await this.writeFacadeContract(facade.name, [1, 0, 0], generatedCode);
                 process.exit(1);
             }
-
             const latestObject: FacadeObjects = {
                 files: [],
                 errors: [],
@@ -137,10 +127,11 @@ async function main() {
                 functions: []
             };
             try {
-                const generatedAst = parse(generatedCode, { tolerant: true });
+                const latestCode = await fs.readFile(latestFacade.file, 'utf8');
+                const latestAst = parse(latestCode, { tolerant: true });
 
                 // Extract functions from the AST
-                traverseASTs(generatedAst, latestObject, latestFacade.file, facade);
+                traverseASTs(latestAst, latestObject, latestFacade.file, facade);
             } catch (err) {
                 console.error(`Error parsing ${latestFacade.file}:`, err);
                 process.exit(1);
@@ -149,46 +140,256 @@ async function main() {
             if (majorDiff.length > 0) {
                 latestFacade.version[0]++;
             }
-            let minorDiff = getSymmetricDifference(facadeObject.errors, latestObject.errors, ["name", "parameters"]);
-            if (minorDiff.length > 0) {
+            const minorErrorDiff = getSymmetricDifference(facadeObject.errors, latestObject.errors, ["name", "parameters"]);
+            const minorEventDiff = getSymmetricDifference(facadeObject.events, latestObject.events, ["name", "parameters"]);
+            if (minorErrorDiff.length > 0 || minorEventDiff.length > 0) {
                 latestFacade.version[1]++;
             }
-            minorDiff = getSymmetricDifference(facadeObject.events, latestObject.events, ["name", "parameters"]);
-            if (minorDiff.length > 0) {
-                latestFacade.version[1]++;
-            }
-            writeFacadeContract(facade.name, latestFacade.version, generatedCode);
+
+            await this.writeFacadeContract(facade.name, latestFacade.version, generatedCode);
         }
+    }
+
+    private async collectSourceFiles(bundleDirName: string) {
+        const functionDir = `./src/${bundleDirName}/functions`;
+        const interfaceDir = `./src/${bundleDirName}/interfaces`;
+
+        return {
+            functionFiles: await getSolidityFiles(functionDir),
+            interfaceFiles: await getSolidityFiles(interfaceDir)
+        };
+    }
+
+    private async extractFacadeObjects(
+        sourceFiles: { functionFiles: string[], interfaceFiles: string[] },
+        facade: FacadeDefinition
+    ): Promise<FacadeObjects> {
+        const facadeObject: FacadeObjects = {
+            files: [],
+            errors: [],
+            events: [],
+            functions: []
+        };
+        const regex = /^(I)?.*(Errors|Events)\.sol$/;
+        
+        for (const file of sourceFiles.interfaceFiles) {
+            const fileName = path.basename(file);
+
+            if (!regex.test(fileName)) {
+                continue;
+            }
+
+            facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
+
+            const content = await fs.readFile(file, 'utf8');
+            try {
+                const ast = parse(content, { tolerant: true });
+
+                // Extract functions from the AST
+                traverseASTs(ast, facadeObject, fileName, facade, true);
+            } catch (err) {
+                console.error(`Error parsing ${file}:`, err);
+            }
+        }
+
+        for (const file of sourceFiles.functionFiles) {
+            const fileName = path.basename(file);
+
+            // Exclude files based on facade configuration
+            if (facade.excludeFileNames.includes(fileName)) {
+                continue;
+            }
+
+            const content = await fs.readFile(file, 'utf8');
+            try {
+                const ast = parse(content, { tolerant: true });
+
+                // Extract functions from the AST
+                traverseASTs(ast, facadeObject, fileName, facade);
+            } catch (err) {
+                console.error(`Error parsing ${file}:`, err);
+            }
+        }
+
+        return facadeObject;
+    }
+
+    private async generateFacadeContract(
+        objects: FacadeObjects,
+        facade: FacadeDefinition,
+        config: FacadeConfig
+    ): Promise<string> {
+        const facadeFilePath = path.join(this.facadeDir, `${facade.name}.sol`);
+        let code = `// SPDX-License-Identifier: MIT
+    pragma solidity ^0.8.24;
+    
+    import {Schema} from "src/${config.bundleDirName}/storage/Schema.sol";
+    `;
+    
+        for (const file of objects.files) {
+            code += `import {${file.name}} from "${file.origin}";\n`;
+        }
+    
+        code += `\ncontract ${facade.name} is Schema, ${objects.files.map((file) => file.name).join(', ')} {\n`;
+    
+        for (const error of objects.errors) {
+            if (error.imported) {
+                continue;
+            }
+            code += generateError(error);
+        }
+        code += `\n`;
+        for (const event of objects.events) {
+            if (event.imported) {
+                continue;
+            }
+            code += generateEvent(event);
+        }
+        code += `\n`;
+        for (const func of objects.functions) {
+            code += generateFunctionSignature(func);
+        }
+    
+        code += `}\n`;
+    
+        return code;
+    }
+
+    private async writeFacadeContract(facadeName: string, version: number[], code: string) {
+        // Write the facade contract to the output file
+        const facadeFilePath = path.join(this.facadeDir, `${facadeName}V${version[0]}_${version[1]}_${version[2]}.sol`);
+        await fs.writeFile(facadeFilePath, code);
+        console.log(`Facade contract generated at ${facadeFilePath}`);
     }
 }
 
-async function loadFacadeConfig(): Promise<FacadeConfig[]> {
+// メイン関数を簡素化
+async function main() {
+    const facadeConfigPath = './facade.yaml';
+    const facadeDir = './generated';
+    const projectRoot = path.resolve(__dirname, '../../');
+
+    const builder = new FacadeBuilder(facadeConfigPath, facadeDir, projectRoot);
+
     try {
-        const configContent = await fs.readFile(facadeConfigPath, 'utf8');
-        const configRaws = yaml.load(configContent) as any;
-
-        for (let configRaw of configRaws) {
-            if (!configRaw.bundleDirName) {
-                configRaw.bundleDirName = configRaw.bundleName
-            }
-            // Ensure excludeFileNames and excludeFunctionNames are arrays
-            for (const facade of configRaw.facades) {
-                if (!facade.excludeFileNames) {
-                    facade.excludeFileNames = [];
-                }
-                if (!facade.excludeFunctionNames) {
-                    facade.excludeFunctionNames = [];
-                }
-            }
-        }
-
-        const config = configRaws as FacadeConfig[];
-        return config;
-    } catch (err) {
-        console.error(`Could not load facade configuration from ${facadeConfigPath}.`);
+        await builder.build();
+    } catch (error) {
+        console.error('Facade generation failed:', error);
         process.exit(1);
     }
 }
+
+// async function main1() {
+//     const facadeDir = './generated';
+//     const projectRoot = path.resolve(__dirname, '../../');
+//     process.chdir(projectRoot);
+
+//     // Ensure output directory exists
+//     await fs.ensureDir(path.resolve(facadeDir));
+//     const facadeFiles = await getSolidityFiles(facadeDir);
+
+//     // Load facade configuration
+//     const facadeConfigs: FacadeConfig[] = [];
+
+//     for (const facadeConfig of facadeConfigs) {
+//         validateFacadeConfig(facadeConfig);
+
+//         const functionDir = `./src/${facadeConfig.bundleDirName}/functions`; // Adjust the path as needed
+//         const interfaceDir = `./src/${facadeConfig.bundleDirName}/interfaces`; // Adjust the path as needed
+//         // Recursively read all Solidity files in the source directory
+//         const functionFiles = await getSolidityFiles(functionDir);
+//         const interfaceFiles = await getSolidityFiles(interfaceDir);
+
+//         const regex = /^(I)?.*(Errors|Events)\.sol$/;
+
+//         // Process each facade
+//         for (const facade of facadeConfig.facades) {
+//             const facadeObject: FacadeObjects = {
+//                 files: [],
+//                 errors: [],
+//                 events: [],
+//                 functions: []
+//             };
+
+//             for (const file of interfaceFiles) {
+//                 const fileName = path.basename(file);
+
+//                 if (!regex.test(fileName)) {
+//                     continue;
+//                 }
+
+//                 facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
+
+//                 const content = await fs.readFile(file, 'utf8');
+//                 try {
+//                     const ast = parse(content, { tolerant: true });
+
+//                     // Extract functions from the AST
+//                     traverseASTs(ast, facadeObject, fileName, facade, true);
+//                 } catch (err) {
+//                     console.error(`Error parsing ${file}:`, err);
+//                 }
+//             }
+
+//             for (const file of functionFiles) {
+//                 const fileName = path.basename(file);
+
+//                 // Exclude files based on facade configuration
+//                 if (facade.excludeFileNames.includes(fileName)) {
+//                     continue;
+//                 }
+
+//                 const content = await fs.readFile(file, 'utf8');
+//                 try {
+//                     const ast = parse(content, { tolerant: true });
+
+//                     // Extract functions from the AST
+//                     traverseASTs(ast, facadeObject, fileName, facade);
+//                 } catch (err) {
+//                     console.error(`Error parsing ${file}:`, err);
+//                 }
+//             }
+
+//             // Generate facade contract
+//             const generatedCode = await generateFacadeContract(facadeObject, facade, facadeConfig);
+
+//             const latestFacade = getLatestVersionFile(facadeFiles, facade.name);
+//             if (latestFacade === null) {
+//                 writeFacadeContract(facade.name, [1, 0, 0], generatedCode);
+//                 process.exit(1);
+//             }
+
+//             const latestObject: FacadeObjects = {
+//                 files: [],
+//                 errors: [],
+//                 events: [],
+//                 functions: []
+//             };
+//             try {
+//                 const generatedAst = parse(generatedCode, { tolerant: true });
+
+//                 // Extract functions from the AST
+//                 traverseASTs(generatedAst, latestObject, latestFacade.file, facade);
+//             } catch (err) {
+//                 console.error(`Error parsing ${latestFacade.file}:`, err);
+//                 process.exit(1);
+//             }
+//             const majorDiff = getSymmetricDifference(facadeObject.functions, latestObject.functions, ["name", "parameters"]);
+//             if (majorDiff.length > 0) {
+//                 latestFacade.version[0]++;
+//             }
+//             let minorDiff = getSymmetricDifference(facadeObject.errors, latestObject.errors, ["name", "parameters"]);
+//             if (minorDiff.length > 0) {
+//                 latestFacade.version[1]++;
+//             }
+//             minorDiff = getSymmetricDifference(facadeObject.events, latestObject.events, ["name", "parameters"]);
+//             if (minorDiff.length > 0) {
+//                 latestFacade.version[1]++;
+//             }
+//             writeFacadeContract(facade.name, latestFacade.version, generatedCode);
+//         }
+//     }
+// }
 
 function validateFacadeConfig(facadeConfig: FacadeConfig) {
     // Ensure required fields are present
@@ -234,7 +435,7 @@ function getLatestVersionFile(files: string[], baseName: string): { file: string
 
     return files
         .map(file => {
-            const match = file.match(regex);
+            const match = path.basename(file).match(regex);
             if (match) {
                 const [_, major, minor, patch] = match.map(Number);
                 return {
@@ -399,57 +600,6 @@ function getTypeName(typeName: any): string {
     }
 }
 
-async function generateFacadeContract(
-    objects: FacadeObjects,
-    facade: FacadeDefinition,
-    config: FacadeConfig
-): Promise<string> {
-    const facadeFilePath = path.join(facadeDir, `${facade.name}.sol`);
-    let code = `// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
-
-import {Schema} from "src/${config.bundleDirName}/storage/Schema.sol";
-`;
-
-    for (const file of objects.files) {
-        code += `import {${file.name}} from "${file.origin}";\n`;
-    }
-
-    code += `\ncontract ${facade.name} is Schema, ${objects.files.map((file) => file.name).join(', ')} {\n`;
-
-    for (const error of objects.errors) {
-        if (error.imported) {
-            continue;
-        }
-        code += generateError(error);
-    }
-    code += `\n`;
-    for (const event of objects.events) {
-        if (event.imported) {
-            continue;
-        }
-        code += generateEvent(event);
-    }
-    code += `\n`;
-    for (const func of objects.functions) {
-        code += generateFunctionSignature(func);
-    }
-
-    code += `}\n`;
-
-    return code;
-
-    // Write the facade contract to the output file
-    await fs.writeFile(facadeFilePath, code);
-    console.log(`Facade contract generated at ${facadeFilePath}`);
-}
-
-async function writeFacadeContract(facadeName: string, version: number[], code: string) {
-    // Write the facade contract to the output file
-    const facadeFilePath = path.join(facadeDir, `${facadeName}V${version[0]}_${version[1]}_${version[2]}.sol`);
-    await fs.writeFile(facadeFilePath, code);
-    console.log(`Facade contract generated at ${facadeFilePath}`);
-}
 function generateError(error: ErrorSignature) {
     return `    error ${error.name}(${error.parameters});\n`
 }
