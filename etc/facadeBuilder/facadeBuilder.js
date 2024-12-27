@@ -35,159 +35,451 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 var parser_1 = require("@solidity-parser/parser");
 var fs = require("fs-extra");
 var path = require("path");
 var yaml = require("js-yaml");
-var facadeConfigPath = './facade.yaml'; // Configuration file path
-var outputDir = './generated'; // Output directory for generated files
+// 新しいクラスを作成
+var FacadeBuilder = /** @class */ (function () {
+    function FacadeBuilder(facadeConfigPath, facadeDir, projectRoot) {
+        this.facadeConfigPath = facadeConfigPath;
+        this.facadeDir = facadeDir;
+        this.projectRoot = projectRoot;
+    }
+    FacadeBuilder.prototype.build = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var facadeConfigs, facadeFiles, _i, facadeConfigs_1, config;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        process.chdir(this.projectRoot);
+                        return [4 /*yield*/, fs.ensureDir(path.resolve(this.facadeDir))];
+                    case 1:
+                        _a.sent();
+                        return [4 /*yield*/, this.loadConfigurations()];
+                    case 2:
+                        facadeConfigs = _a.sent();
+                        return [4 /*yield*/, getSolidityFiles(this.facadeDir)];
+                    case 3:
+                        facadeFiles = _a.sent();
+                        _i = 0, facadeConfigs_1 = facadeConfigs;
+                        _a.label = 4;
+                    case 4:
+                        if (!(_i < facadeConfigs_1.length)) return [3 /*break*/, 7];
+                        config = facadeConfigs_1[_i];
+                        return [4 /*yield*/, this.processBuilderConfig(config, facadeFiles)];
+                    case 5:
+                        _a.sent();
+                        _a.label = 6;
+                    case 6:
+                        _i++;
+                        return [3 /*break*/, 4];
+                    case 7: return [2 /*return*/];
+                }
+            });
+        });
+    };
+    FacadeBuilder.prototype.loadConfigurations = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var configContent, configRaws, _i, configRaws_1, configRaw, _a, _b, facade, config, err_1;
+            return __generator(this, function (_c) {
+                switch (_c.label) {
+                    case 0:
+                        _c.trys.push([0, 2, , 3]);
+                        return [4 /*yield*/, fs.readFile(this.facadeConfigPath, 'utf8')];
+                    case 1:
+                        configContent = _c.sent();
+                        configRaws = yaml.load(configContent);
+                        for (_i = 0, configRaws_1 = configRaws; _i < configRaws_1.length; _i++) {
+                            configRaw = configRaws_1[_i];
+                            if (!configRaw.bundleDirName) {
+                                configRaw.bundleDirName = configRaw.bundleName;
+                            }
+                            // Ensure excludeFileNames and excludeFunctionNames are arrays
+                            for (_a = 0, _b = configRaw.facades; _a < _b.length; _a++) {
+                                facade = _b[_a];
+                                if (!facade.excludeFileNames) {
+                                    facade.excludeFileNames = [];
+                                }
+                                if (!facade.excludeFunctionNames) {
+                                    facade.excludeFunctionNames = [];
+                                }
+                            }
+                        }
+                        config = configRaws;
+                        return [2 /*return*/, config];
+                    case 2:
+                        err_1 = _c.sent();
+                        console.error("Could not load facade configuration from ".concat(this.facadeConfigPath, "."));
+                        process.exit(1);
+                        return [3 /*break*/, 3];
+                    case 3: return [2 /*return*/];
+                }
+            });
+        });
+    };
+    FacadeBuilder.prototype.processBuilderConfig = function (config, existingFacadeFiles) {
+        return __awaiter(this, void 0, void 0, function () {
+            var sourceFiles, _i, _a, facade, facadeObject, generatedCode, latestFacade, latestObject, latestCode, latestAst, err_2, majorDiff, minorErrorDiff, minorEventDiff;
+            return __generator(this, function (_b) {
+                switch (_b.label) {
+                    case 0:
+                        validateFacadeConfig(config);
+                        return [4 /*yield*/, this.collectSourceFiles(config.bundleDirName)];
+                    case 1:
+                        sourceFiles = _b.sent();
+                        _i = 0, _a = config.facades;
+                        _b.label = 2;
+                    case 2:
+                        if (!(_i < _a.length)) return [3 /*break*/, 13];
+                        facade = _a[_i];
+                        return [4 /*yield*/, this.extractFacadeObjects(sourceFiles, facade)];
+                    case 3:
+                        facadeObject = _b.sent();
+                        return [4 /*yield*/, this.generateFacadeContract(facadeObject, facade, config)];
+                    case 4:
+                        generatedCode = _b.sent();
+                        latestFacade = getLatestVersionFile(existingFacadeFiles, facade.name);
+                        if (!(latestFacade === null)) return [3 /*break*/, 6];
+                        return [4 /*yield*/, this.writeFacadeContract(facade.name, [1, 0, 0], generatedCode)];
+                    case 5:
+                        _b.sent();
+                        process.exit(1);
+                        _b.label = 6;
+                    case 6:
+                        latestObject = {
+                            files: [],
+                            errors: [],
+                            events: [],
+                            functions: []
+                        };
+                        _b.label = 7;
+                    case 7:
+                        _b.trys.push([7, 9, , 10]);
+                        return [4 /*yield*/, fs.readFile(latestFacade.file, 'utf8')];
+                    case 8:
+                        latestCode = _b.sent();
+                        latestAst = (0, parser_1.parse)(latestCode, { tolerant: true });
+                        // Extract functions from the AST
+                        traverseASTs(latestAst, latestObject, latestFacade.file, facade);
+                        return [3 /*break*/, 10];
+                    case 9:
+                        err_2 = _b.sent();
+                        console.error("Error parsing ".concat(latestFacade.file, ":"), err_2);
+                        process.exit(1);
+                        return [3 /*break*/, 10];
+                    case 10:
+                        majorDiff = getSymmetricDifference(facadeObject.functions, latestObject.functions, ["name", "parameters"]);
+                        if (majorDiff.length > 0) {
+                            latestFacade.version[0]++;
+                        }
+                        minorErrorDiff = getSymmetricDifference(facadeObject.errors, latestObject.errors, ["name", "parameters"]);
+                        minorEventDiff = getSymmetricDifference(facadeObject.events, latestObject.events, ["name", "parameters"]);
+                        if (minorErrorDiff.length > 0 || minorEventDiff.length > 0) {
+                            latestFacade.version[1]++;
+                        }
+                        return [4 /*yield*/, this.writeFacadeContract(facade.name, latestFacade.version, generatedCode)];
+                    case 11:
+                        _b.sent();
+                        _b.label = 12;
+                    case 12:
+                        _i++;
+                        return [3 /*break*/, 2];
+                    case 13: return [2 /*return*/];
+                }
+            });
+        });
+    };
+    FacadeBuilder.prototype.collectSourceFiles = function (bundleDirName) {
+        return __awaiter(this, void 0, void 0, function () {
+            var functionDir, interfaceDir;
+            var _a;
+            return __generator(this, function (_b) {
+                switch (_b.label) {
+                    case 0:
+                        functionDir = "./src/".concat(bundleDirName, "/functions");
+                        interfaceDir = "./src/".concat(bundleDirName, "/interfaces");
+                        _a = {};
+                        return [4 /*yield*/, getSolidityFiles(functionDir)];
+                    case 1:
+                        _a.functionFiles = _b.sent();
+                        return [4 /*yield*/, getSolidityFiles(interfaceDir)];
+                    case 2: return [2 /*return*/, (_a.interfaceFiles = _b.sent(),
+                            _a)];
+                }
+            });
+        });
+    };
+    FacadeBuilder.prototype.extractFacadeObjects = function (sourceFiles, facade) {
+        return __awaiter(this, void 0, void 0, function () {
+            var facadeObject, regex, _i, _a, file, fileName, content, ast, _b, _c, file, fileName, content, ast;
+            return __generator(this, function (_d) {
+                switch (_d.label) {
+                    case 0:
+                        facadeObject = {
+                            files: [],
+                            errors: [],
+                            events: [],
+                            functions: []
+                        };
+                        regex = /^(I)?.*(Errors|Events)\.sol$/;
+                        _i = 0, _a = sourceFiles.interfaceFiles;
+                        _d.label = 1;
+                    case 1:
+                        if (!(_i < _a.length)) return [3 /*break*/, 4];
+                        file = _a[_i];
+                        fileName = path.basename(file);
+                        if (!regex.test(fileName)) {
+                            return [3 /*break*/, 3];
+                        }
+                        facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
+                        return [4 /*yield*/, fs.readFile(file, 'utf8')];
+                    case 2:
+                        content = _d.sent();
+                        try {
+                            ast = (0, parser_1.parse)(content, { tolerant: true });
+                            // Extract functions from the AST
+                            traverseASTs(ast, facadeObject, fileName, facade, true);
+                        }
+                        catch (err) {
+                            console.error("Error parsing ".concat(file, ":"), err);
+                        }
+                        _d.label = 3;
+                    case 3:
+                        _i++;
+                        return [3 /*break*/, 1];
+                    case 4:
+                        _b = 0, _c = sourceFiles.functionFiles;
+                        _d.label = 5;
+                    case 5:
+                        if (!(_b < _c.length)) return [3 /*break*/, 8];
+                        file = _c[_b];
+                        fileName = path.basename(file);
+                        // Exclude files based on facade configuration
+                        if (facade.excludeFileNames.includes(fileName)) {
+                            return [3 /*break*/, 7];
+                        }
+                        return [4 /*yield*/, fs.readFile(file, 'utf8')];
+                    case 6:
+                        content = _d.sent();
+                        try {
+                            ast = (0, parser_1.parse)(content, { tolerant: true });
+                            // Extract functions from the AST
+                            traverseASTs(ast, facadeObject, fileName, facade);
+                        }
+                        catch (err) {
+                            console.error("Error parsing ".concat(file, ":"), err);
+                        }
+                        _d.label = 7;
+                    case 7:
+                        _b++;
+                        return [3 /*break*/, 5];
+                    case 8: return [2 /*return*/, facadeObject];
+                }
+            });
+        });
+    };
+    FacadeBuilder.prototype.generateFacadeContract = function (objects, facade, config) {
+        return __awaiter(this, void 0, void 0, function () {
+            var facadeFilePath, code, _i, _a, file, _b, _c, error, _d, _e, event_1, _f, _g, func;
+            return __generator(this, function (_h) {
+                facadeFilePath = path.join(this.facadeDir, "".concat(facade.name, ".sol"));
+                code = "// SPDX-License-Identifier: MIT\n    pragma solidity ^0.8.24;\n    \n    import {Schema} from \"src/".concat(config.bundleDirName, "/storage/Schema.sol\";\n    ");
+                for (_i = 0, _a = objects.files; _i < _a.length; _i++) {
+                    file = _a[_i];
+                    code += "import {".concat(file.name, "} from \"").concat(file.origin, "\";\n");
+                }
+                code += "\ncontract ".concat(facade.name, " is Schema, ").concat(objects.files.map(function (file) { return file.name; }).join(', '), " {\n");
+                for (_b = 0, _c = objects.errors; _b < _c.length; _b++) {
+                    error = _c[_b];
+                    if (error.imported) {
+                        continue;
+                    }
+                    code += generateError(error);
+                }
+                code += "\n";
+                for (_d = 0, _e = objects.events; _d < _e.length; _d++) {
+                    event_1 = _e[_d];
+                    if (event_1.imported) {
+                        continue;
+                    }
+                    code += generateEvent(event_1);
+                }
+                code += "\n";
+                for (_f = 0, _g = objects.functions; _f < _g.length; _f++) {
+                    func = _g[_f];
+                    code += generateFunctionSignature(func);
+                }
+                code += "}\n";
+                return [2 /*return*/, code];
+            });
+        });
+    };
+    FacadeBuilder.prototype.writeFacadeContract = function (facadeName, version, code) {
+        return __awaiter(this, void 0, void 0, function () {
+            var facadeFilePath;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        facadeFilePath = path.join(this.facadeDir, "".concat(facadeName, "V").concat(version[0], "_").concat(version[1], "_").concat(version[2], ".sol"));
+                        return [4 /*yield*/, fs.writeFile(facadeFilePath, code)];
+                    case 1:
+                        _a.sent();
+                        console.log("Facade contract generated at ".concat(facadeFilePath));
+                        return [2 /*return*/];
+                }
+            });
+        });
+    };
+    return FacadeBuilder;
+}());
+// メイン関数を簡素化
 function main() {
     return __awaiter(this, void 0, void 0, function () {
-        var projectRoot, facadeConfigs, _i, facadeConfigs_1, facadeConfig, _a, _b, facade, _c, _d, facade, facadeObject, functionDir, interfaceDir, functionFiles, interfaceFiles, regex, _e, interfaceFiles_1, file, fileName, _f, functionFiles_1, file, fileName, content, ast;
-        return __generator(this, function (_g) {
-            switch (_g.label) {
+        var facadeConfigPath, facadeDir, projectRoot, builder, error_1;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
                 case 0:
+                    facadeConfigPath = './facade.yaml';
+                    facadeDir = './generated';
                     projectRoot = path.resolve(__dirname, '../../');
-                    process.chdir(projectRoot);
-                    // Ensure output directory exists
-                    return [4 /*yield*/, fs.ensureDir(path.resolve(outputDir))];
+                    builder = new FacadeBuilder(facadeConfigPath, facadeDir, projectRoot);
+                    _a.label = 1;
                 case 1:
-                    // Ensure output directory exists
-                    _g.sent();
-                    return [4 /*yield*/, loadFacadeConfig()];
+                    _a.trys.push([1, 3, , 4]);
+                    return [4 /*yield*/, builder.build()];
                 case 2:
-                    facadeConfigs = _g.sent();
-                    _i = 0, facadeConfigs_1 = facadeConfigs;
-                    _g.label = 3;
-                case 3:
-                    if (!(_i < facadeConfigs_1.length)) return [3 /*break*/, 14];
-                    facadeConfig = facadeConfigs_1[_i];
-                    // Ensure required fields are present
-                    if (!facadeConfig.bundleName || !facadeConfig.bundleDirName) {
-                        console.error('Error: bundleName and bundleDirName are required in facade.yaml');
-                        process.exit(1);
-                    }
-                    if (!facadeConfig.facades || facadeConfig.facades.length === 0) {
-                        console.error('Error: At least one facade must be defined in facade.yaml');
-                        process.exit(1);
-                    }
-                    for (_a = 0, _b = facadeConfig.facades; _a < _b.length; _a++) {
-                        facade = _b[_a];
-                        if (!facade.name) {
-                            console.error('Error: Each facade must have a name');
-                            process.exit(1);
-                        }
-                    }
-                    _c = 0, _d = facadeConfig.facades;
-                    _g.label = 4;
-                case 4:
-                    if (!(_c < _d.length)) return [3 /*break*/, 13];
-                    facade = _d[_c];
-                    facadeObject = {
-                        files: [],
-                        errors: [],
-                        events: [],
-                        functions: []
-                    };
-                    functionDir = "./src/".concat(facadeConfig.bundleDirName, "/functions");
-                    interfaceDir = "./src/".concat(facadeConfig.bundleDirName, "/interfaces");
-                    return [4 /*yield*/, getSolidityFiles(functionDir)];
-                case 5:
-                    functionFiles = _g.sent();
-                    return [4 /*yield*/, getSolidityFiles(interfaceDir)];
-                case 6:
-                    interfaceFiles = _g.sent();
-                    regex = /^(I)?.*(Errors|Events)\.sol$/;
-                    for (_e = 0, interfaceFiles_1 = interfaceFiles; _e < interfaceFiles_1.length; _e++) {
-                        file = interfaceFiles_1[_e];
-                        fileName = path.basename(file);
-                        if (regex.test(fileName)) {
-                            facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
-                        }
-                    }
-                    _f = 0, functionFiles_1 = functionFiles;
-                    _g.label = 7;
-                case 7:
-                    if (!(_f < functionFiles_1.length)) return [3 /*break*/, 10];
-                    file = functionFiles_1[_f];
-                    fileName = path.basename(file);
-                    // Exclude files based on facade configuration
-                    if (facade.excludeFileNames.includes(fileName)) {
-                        return [3 /*break*/, 9];
-                    }
-                    return [4 /*yield*/, fs.readFile(file, 'utf8')];
-                case 8:
-                    content = _g.sent();
-                    try {
-                        ast = (0, parser_1.parse)(content, { tolerant: true });
-                        // Extract functions from the AST
-                        traverseASTs(ast, facadeObject, fileName, facade);
-                    }
-                    catch (err) {
-                        console.error("Error parsing ".concat(file, ":"), err);
-                    }
-                    _g.label = 9;
-                case 9:
-                    _f++;
-                    return [3 /*break*/, 7];
-                case 10:
-                    console.log(facadeObject);
-                    // Generate facade contract
-                    return [4 /*yield*/, generateFacadeContract(facadeObject, facade, facadeConfig)];
-                case 11:
-                    // Generate facade contract
-                    _g.sent();
-                    _g.label = 12;
-                case 12:
-                    _c++;
+                    _a.sent();
                     return [3 /*break*/, 4];
-                case 13:
-                    _i++;
-                    return [3 /*break*/, 3];
-                case 14: return [2 /*return*/];
+                case 3:
+                    error_1 = _a.sent();
+                    console.error('Facade generation failed:', error_1);
+                    process.exit(1);
+                    return [3 /*break*/, 4];
+                case 4: return [2 /*return*/];
             }
         });
     });
 }
-function loadFacadeConfig() {
-    return __awaiter(this, void 0, void 0, function () {
-        var configContent, configRaws, _i, configRaws_1, configRaw, _a, _b, facade, config, err_1;
-        return __generator(this, function (_c) {
-            switch (_c.label) {
-                case 0:
-                    _c.trys.push([0, 2, , 3]);
-                    return [4 /*yield*/, fs.readFile(facadeConfigPath, 'utf8')];
-                case 1:
-                    configContent = _c.sent();
-                    configRaws = yaml.load(configContent);
-                    for (_i = 0, configRaws_1 = configRaws; _i < configRaws_1.length; _i++) {
-                        configRaw = configRaws_1[_i];
-                        if (!configRaw.bundleDirName) {
-                            configRaw.bundleDirName = configRaw.bundleName;
-                        }
-                        // Ensure excludeFileNames and excludeFunctionNames are arrays
-                        for (_a = 0, _b = configRaw.facades; _a < _b.length; _a++) {
-                            facade = _b[_a];
-                            if (!facade.excludeFileNames) {
-                                facade.excludeFileNames = [];
-                            }
-                            if (!facade.excludeFunctionNames) {
-                                facade.excludeFunctionNames = [];
-                            }
-                        }
-                    }
-                    config = configRaws;
-                    return [2 /*return*/, config];
-                case 2:
-                    err_1 = _c.sent();
-                    console.error("Could not load facade configuration from ".concat(facadeConfigPath, "."));
-                    process.exit(1);
-                    return [3 /*break*/, 3];
-                case 3: return [2 /*return*/];
-            }
-        });
-    });
+// async function main1() {
+//     const facadeDir = './generated';
+//     const projectRoot = path.resolve(__dirname, '../../');
+//     process.chdir(projectRoot);
+//     // Ensure output directory exists
+//     await fs.ensureDir(path.resolve(facadeDir));
+//     const facadeFiles = await getSolidityFiles(facadeDir);
+//     // Load facade configuration
+//     const facadeConfigs: FacadeConfig[] = [];
+//     for (const facadeConfig of facadeConfigs) {
+//         validateFacadeConfig(facadeConfig);
+//         const functionDir = `./src/${facadeConfig.bundleDirName}/functions`; // Adjust the path as needed
+//         const interfaceDir = `./src/${facadeConfig.bundleDirName}/interfaces`; // Adjust the path as needed
+//         // Recursively read all Solidity files in the source directory
+//         const functionFiles = await getSolidityFiles(functionDir);
+//         const interfaceFiles = await getSolidityFiles(interfaceDir);
+//         const regex = /^(I)?.*(Errors|Events)\.sol$/;
+//         // Process each facade
+//         for (const facade of facadeConfig.facades) {
+//             const facadeObject: FacadeObjects = {
+//                 files: [],
+//                 errors: [],
+//                 events: [],
+//                 functions: []
+//             };
+//             for (const file of interfaceFiles) {
+//                 const fileName = path.basename(file);
+//                 if (!regex.test(fileName)) {
+//                     continue;
+//                 }
+//                 facadeObject.files.push({ name: fileName.replace(/\.sol$/, ""), origin: file.replace(/\\/g, '/') });
+//                 const content = await fs.readFile(file, 'utf8');
+//                 try {
+//                     const ast = parse(content, { tolerant: true });
+//                     // Extract functions from the AST
+//                     traverseASTs(ast, facadeObject, fileName, facade, true);
+//                 } catch (err) {
+//                     console.error(`Error parsing ${file}:`, err);
+//                 }
+//             }
+//             for (const file of functionFiles) {
+//                 const fileName = path.basename(file);
+//                 // Exclude files based on facade configuration
+//                 if (facade.excludeFileNames.includes(fileName)) {
+//                     continue;
+//                 }
+//                 const content = await fs.readFile(file, 'utf8');
+//                 try {
+//                     const ast = parse(content, { tolerant: true });
+//                     // Extract functions from the AST
+//                     traverseASTs(ast, facadeObject, fileName, facade);
+//                 } catch (err) {
+//                     console.error(`Error parsing ${file}:`, err);
+//                 }
+//             }
+//             // Generate facade contract
+//             const generatedCode = await generateFacadeContract(facadeObject, facade, facadeConfig);
+//             const latestFacade = getLatestVersionFile(facadeFiles, facade.name);
+//             if (latestFacade === null) {
+//                 writeFacadeContract(facade.name, [1, 0, 0], generatedCode);
+//                 process.exit(1);
+//             }
+//             const latestObject: FacadeObjects = {
+//                 files: [],
+//                 errors: [],
+//                 events: [],
+//                 functions: []
+//             };
+//             try {
+//                 const generatedAst = parse(generatedCode, { tolerant: true });
+//                 // Extract functions from the AST
+//                 traverseASTs(generatedAst, latestObject, latestFacade.file, facade);
+//             } catch (err) {
+//                 console.error(`Error parsing ${latestFacade.file}:`, err);
+//                 process.exit(1);
+//             }
+//             const majorDiff = getSymmetricDifference(facadeObject.functions, latestObject.functions, ["name", "parameters"]);
+//             if (majorDiff.length > 0) {
+//                 latestFacade.version[0]++;
+//             }
+//             let minorDiff = getSymmetricDifference(facadeObject.errors, latestObject.errors, ["name", "parameters"]);
+//             if (minorDiff.length > 0) {
+//                 latestFacade.version[1]++;
+//             }
+//             minorDiff = getSymmetricDifference(facadeObject.events, latestObject.events, ["name", "parameters"]);
+//             if (minorDiff.length > 0) {
+//                 latestFacade.version[1]++;
+//             }
+//             writeFacadeContract(facade.name, latestFacade.version, generatedCode);
+//         }
+//     }
+// }
+function validateFacadeConfig(facadeConfig) {
+    // Ensure required fields are present
+    if (!facadeConfig.bundleName || !facadeConfig.bundleDirName) {
+        console.error('Error: bundleName and bundleDirName are required in facade.yaml');
+        process.exit(1);
+    }
+    if (!facadeConfig.facades || facadeConfig.facades.length === 0) {
+        console.error('Error: At least one facade must be defined in facade.yaml');
+        process.exit(1);
+    }
+    for (var _i = 0, _a = facadeConfig.facades; _i < _a.length; _i++) {
+        var facade = _a[_i];
+        if (!facade.name) {
+            console.error('Error: Each facade must have a name');
+            process.exit(1);
+        }
+    }
 }
 function getSolidityFiles(dir) {
     return __awaiter(this, void 0, void 0, function () {
@@ -227,7 +519,46 @@ function getSolidityFiles(dir) {
         });
     });
 }
-function traverseASTs(ast, facadeObjects, origin, facade) {
+function getLatestVersionFile(files, baseName) {
+    var regex = new RegExp("^".concat(baseName, "(?:V(\\d+)_(\\d+)_(\\d+))?\\.sol$"));
+    return files
+        .map(function (file) {
+        var match = path.basename(file).match(regex);
+        if (match) {
+            var _a = match.map(Number), _ = _a[0], major = _a[1], minor = _a[2], patch = _a[3];
+            return {
+                file: file,
+                version: [major || 1, minor || 0, patch || 0],
+            };
+        }
+        return null;
+    })
+        .filter(function (item) { return item !== null; })
+        .sort(function (a, b) {
+        // バージョン配列を比較 (降順)
+        for (var i = 0; i < 3; i++) {
+            if (b.version[i] !== a.version[i]) {
+                return b.version[i] - a.version[i];
+            }
+        }
+        return 0;
+    })[0] || null;
+}
+function getSymmetricDifference(array1, array2, keys) {
+    var isMatch = function (a, b) { return keys.every(function (key) { return a[key] === b[key]; }); };
+    // A ∪ B
+    var union = __spreadArray(__spreadArray([], array1, true), array2, true);
+    // A ∩ B
+    var intersection = array1.filter(function (item1) {
+        return array2.some(function (item2) { return isMatch(item1, item2); });
+    });
+    // A ∪ B - A ∩ B
+    return union.filter(function (item) {
+        return !intersection.some(function (intersectItem) { return isMatch(item, intersectItem); });
+    });
+}
+function traverseASTs(ast, facadeObjects, origin, facade, imported) {
+    if (imported === void 0) { imported = false; }
     if (ast.type === 'FunctionDefinition' && ast.isConstructor === false) {
         extractFunctions(ast, facadeObjects.functions, origin, facade);
     }
@@ -235,40 +566,42 @@ function traverseASTs(ast, facadeObjects, origin, facade) {
         // Traverse contract sub-nodes
         for (var _i = 0, _a = ast.subNodes; _i < _a.length; _i++) {
             var subNode = _a[_i];
-            traverseASTs(subNode, facadeObjects, origin, facade);
+            traverseASTs(subNode, facadeObjects, origin, facade, imported);
         }
     }
     else if (ast.type === 'SourceUnit') {
         // Traverse source unit nodes
         for (var _b = 0, _c = ast.children; _b < _c.length; _b++) {
             var child = _c[_b];
-            traverseASTs(child, facadeObjects, origin, facade);
+            traverseASTs(child, facadeObjects, origin, facade, imported);
         }
     }
     else if (ast.type === 'CustomErrorDefinition') {
-        extractErrors(ast, facadeObjects.errors, origin);
+        extractErrors(ast, facadeObjects.errors, origin, imported);
     }
     else if (ast.type === 'EventDefinition') {
-        extractEvents(ast, facadeObjects.events, origin);
+        extractEvents(ast, facadeObjects.events, origin, imported);
     }
 }
-function extractErrors(ast, errors, origin) {
+function extractErrors(ast, errors, origin, imported) {
     var error = {
         name: ast.name,
         parameters: ast.parameters
             .map(function (param) { return getParameter(param); })
             .join(', '),
-        origin: origin
+        origin: origin,
+        imported: imported
     };
     errors.push(error);
 }
-function extractEvents(ast, events, origin) {
+function extractEvents(ast, events, origin, imported) {
     var event = {
         name: ast.name,
         parameters: ast.parameters
             .map(function (param) { return getParameter(param); })
             .join(', '),
-        origin: origin
+        origin: origin,
+        imported: imported
     };
     events.push(event);
 }
@@ -325,45 +658,6 @@ function getTypeName(typeName) {
     else {
         return 'unknown';
     }
-}
-function generateFacadeContract(objects, facade, config) {
-    return __awaiter(this, void 0, void 0, function () {
-        var facadeFilePath, code, _i, _a, file, _b, _c, error, _d, _e, event_1, _f, _g, func;
-        return __generator(this, function (_h) {
-            switch (_h.label) {
-                case 0:
-                    facadeFilePath = path.join(outputDir, "".concat(facade.name, ".sol"));
-                    code = "\n// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\nimport {Schema} from \"src/".concat(config.bundleDirName, "/storage/Schema.sol\";\n");
-                    for (_i = 0, _a = objects.files; _i < _a.length; _i++) {
-                        file = _a[_i];
-                        code += "import {".concat(file.name, "} from \"").concat(file.origin, "\";\n");
-                    }
-                    code += "\ncontract ".concat(facade.name, " is Schema, ").concat(objects.files.map(function (file) { return file.name; }).join(', '), " {\n");
-                    for (_b = 0, _c = objects.errors; _b < _c.length; _b++) {
-                        error = _c[_b];
-                        code += generateError(error);
-                    }
-                    code += "\n";
-                    for (_d = 0, _e = objects.events; _d < _e.length; _d++) {
-                        event_1 = _e[_d];
-                        code += generateEvent(event_1);
-                    }
-                    code += "\n";
-                    for (_f = 0, _g = objects.functions; _f < _g.length; _f++) {
-                        func = _g[_f];
-                        code += generateFunctionSignature(func);
-                    }
-                    code += "}\n";
-                    // Write the facade contract to the output file
-                    return [4 /*yield*/, fs.writeFile(facadeFilePath, code)];
-                case 1:
-                    // Write the facade contract to the output file
-                    _h.sent();
-                    console.log("Facade contract generated at ".concat(facadeFilePath));
-                    return [2 /*return*/];
-            }
-        });
-    });
 }
 function generateError(error) {
     return "    error ".concat(error.name, "(").concat(error.parameters, ");\n");
